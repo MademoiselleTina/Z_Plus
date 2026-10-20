@@ -3028,10 +3028,34 @@ gvEl.addEventListener('pointerdown',e=>{
   if(!n)return;
   e.preventDefault();
   e.stopPropagation();
-  // Get current scale of .gvpages to convert screen pixels to gvpages coordinates
+  // Get current effective scale from baseW to screen pixels
+  // Note is inside .gvpages which has CSS transform; note CSS position is in baseW space
   const gvpages=gvEl.querySelector('.gvpages');
-  const scale=gvpages?parseFloat(gvpages.style.transform.replace(/[^0-9.-]/g,''))||1:1;
-  noteDrag={uid,sx:e.clientX,sy:e.clientY,ox:n.x,oy:n.y,moved:false,id:e.pointerId,scale};
+  const cssScale=gvpages?parseFloat(gvpages.style.transform.replace(/[^0-9.-]/g,''))||1:1;
+  // Note positions are stored in baseW; CSS left/top = n.x * (gvW/baseW) but renderGridNotesLayerHTML uses scale=gvW/baseW
+  // During preview: baseW=gvRW, gvW updated, render not re-run, so CSS pos = n.x (scale=1), .gvpages transform = gvW/gvRW
+  // After commit: baseW=gvRW=gvW, render re-run, CSS pos = n.x, .gvpages transform = 1
+  // Effective scale from baseW to screen = cssScale (since render scale = 1 during preview, 1 after commit)
+  const effectiveScale = cssScale;
+  // Capture grab offset in baseW coordinates: distance from note's left edge to mouse pointer
+  const noteEl = gvEl.querySelector(`.gvnotes-layer .gvnote[data-uid="${uid}"]`);
+  let grabOffsetX = 0, grabOffsetY = 0;
+  if (noteEl) {
+    const noteRect = noteEl.getBoundingClientRect();
+    const pagesRect = gvpages.getBoundingClientRect();
+    // Grab offset in screen pixels relative to note's left edge
+    const screenGrabX = e.clientX - noteRect.left;
+    const screenGrabY = e.clientY - noteRect.top;
+    // Convert to baseW coordinates
+    grabOffsetX = screenGrabX / effectiveScale;
+    grabOffsetY = screenGrabY / effectiveScale;
+  }
+  // Store start mouse position in BASEW coordinates (screen pixels / effectiveScale)
+  const startMouseX = e.clientX / effectiveScale;
+  const startMouseY = e.clientY / effectiveScale;
+  // ox/oy = note's left edge position in baseW coordinates at drag start
+  // grabOffsetX/Y = distance from note's left edge to mouse pointer in baseW coordinates
+  noteDrag={uid,sx:startMouseX,sy:startMouseY,ox:n.x,oy:n.y,moved:false,id:e.pointerId,scale:effectiveScale,grabOffsetX,grabOffsetY};
   noteDragging=true;
   try{gvEl.setPointerCapture(e.pointerId)}catch(_){}
 });
@@ -3043,14 +3067,22 @@ gvEl.addEventListener('pointermove',e=>{
     gvEl.classList.add('gvmoving');
   }
   if(noteDrag.moved){
-    const dx=(e.clientX-noteDrag.sx)/noteDrag.scale;
-    const dy=(e.clientY-noteDrag.sy)/noteDrag.scale;
+    // Convert current pointer position to baseW coordinates using effective scale
+    const currentMouseX = e.clientX / noteDrag.scale;
+    const currentMouseY = e.clientY / noteDrag.scale;
+    // Movement in baseW coordinates = current mouse position - start mouse position (both in baseW)
+    const dx = currentMouseX - noteDrag.sx;
+    const dy = currentMouseY - noteDrag.sy;
     const n=st.notes.find(x=>x.uid===noteDrag.uid);
     if(n){
-      n.x=noteDrag.ox+dx;
-      n.y=noteDrag.oy+dy;
+      // New position = original position + movement in baseW coordinates
+      n.x = noteDrag.ox + dx;
+      n.y = noteDrag.oy + dy;
       // Update DOM element in .gvnotes-layer (now inside .gvpages)
-      // Note positions are stored in gvpages coordinates
+      // Note positions are stored in baseW coordinates; renderGridNotesLayerHTML uses scale=gvW/baseW
+      // During preview: baseW=gvRW, gvW updated, CSS pos = n.x (scale=1), .gvpages transform = gvW/gvRW
+      // After commit: baseW=gvRW=gvW, CSS pos = n.x, .gvpages transform = 1
+      // So CSS left/top = n.x (always in baseW coordinates)
       const gvpages=gvEl.querySelector('.gvpages');
       if(gvpages){
         const el=gvEl.querySelector(`.gvnotes-layer .gvnote[data-uid="${n.uid}"]`);
