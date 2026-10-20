@@ -2643,9 +2643,10 @@ function gvZoomAt(f,cx,cy){const w=Math.min(GV_MAXW,Math.max(gvMinW(),gvW*f));if
   if(!gvZoomAt.a)gvZoomAt.a=a0;gvKeep(gvZoomAt.a,cx,cy);
   clearTimeout(gvZoomAt.t);gvZoomAt.t=setTimeout(()=>{const a=gvZoomAt.a;gvZoomAt.a=null;gvCommit(cx,cy,a)},150)}
 // Ensure notes are also scaled during zoom preview
-// Notes are now in .gvnotes-layer (child of .gvwrap), not affected by .gvpages transform
+// Notes are now inside .gvpages, so they automatically get the same CSS transform
+// No manual scaling needed - the transform on .gvpages handles it
 function gvScaleNotes(scale){
-  // No scaling needed for notes layer since it's outside .gvpages transform
+  // Notes layer is now inside .gvpages, so it automatically scales with the parent transform
 }
 // the grid nearest to a point and the point's place in it (fractions of its width and height)
 function gvAnchor(cx,cy){const pages=[...gvEl.querySelectorAll('.grid8')];if(!pages.length)return null;
@@ -2680,31 +2681,26 @@ function renderGridView(){if(!gridView)return;let h;gvRW=gvW;gvHi=gvSelUid(); //
   if(euroInPatch())h+=`<section class="gvpage gveuro${pageFilter>=0&&pageFilter!==M.EURO_PAGE?' gvoff':''}" style="--bw:${euroBw().toFixed(1)}px"><h4 title="Euroburo Interfaces: placed as on the front panel">Euroburo Interfaces</h4><div class="grid8" data-page="${M.EURO_PAGE}"><span class="gvframe"></span><span class="gvframe" style="grid-area:1/1/6/3"></span>${euroGridHTML()}</div></section>`;
   h+=`<div class="gvgrid" style="grid-template-columns:repeat(${gvCols()},${Math.round(gvW)}px)">`;
   for(let p=0;p<gridPages();p++)h+=`<section class="gvpage${pageFilter>=0&&p!==pageFilter?' gvoff':''}"><h4 title="${esc('Page '+p+(st.pages[p]?' · '+st.pages[p]:''))}">Page ${p}${st.pages[p]?' · '+esc(st.pages[p]):''}</h4><div class="grid8" data-page="${p}">${gridHTML(p,null)}${gvW/8>=GV_LBL?gridLabels(p):''}${gridHi(p)}</div></section>`;
-  gvEl.innerHTML=h+'</div></div></div>';
-  // Notes layer - rendered separately as sibling of .gvpages for stable positioning
-  renderGridNotesLayer()}
-// Notes layer rendered as child of .gvwrap (not .gvpages) for stable positioning relative to canvas
-function renderGridNotesLayer(){
-  const gvwrap=gvEl.querySelector('.gvwrap');
-  const gvpages=gvEl.querySelector('.gvpages');
-  if(!gvwrap||!gvpages)return;
-  // Compute gvpages position relative to gvwrap
-  const wrapRect=gvwrap.getBoundingClientRect();
-  const pagesRect=gvpages.getBoundingClientRect();
-  const offsetX=pagesRect.left-wrapRect.left;
-  const offsetY=pagesRect.top-wrapRect.top;
-  // Build notes HTML in gvwrap coordinates
+  // Notes layer - now inside .gvpages so it shares the exact same transform during zoom
+  h+=renderGridNotesLayerHTML();
+  gvEl.innerHTML=h+'</div></div></div>';}
+// Notes layer rendered inside .gvpages so it shares the exact same transform during zoom
+function renderGridNotesLayerHTML(){
+  // Build notes HTML in gvpages coordinates (no offset needed since inside .gvpages)
   if(!st.notes||!st.notes.length){
-    // Remove any existing notes layer
-    const existing=gvwrap.querySelector('.gvnotes-layer');
-    if(existing)existing.remove();
-    return;
+    return '<div class="gvnotes-layer" style="position:absolute;left:0;top:0;pointer-events:none;z-index:10;"></div>';
   }
   let h='<div class="gvnotes-layer" style="position:absolute;left:0;top:0;pointer-events:none;z-index:10;">';
   for(const n of st.notes){
     const selClass=noteSel===n.uid?' gvnote-sel':'';
-    // Note positions are stored in gvpages coordinates; convert to gvwrap coordinates
-    h+=`<div class="gvnote${selClass}" data-uid="${n.uid}" style="left:${n.x+offsetX}px;top:${n.y+offsetY}px;width:${n.w}px;height:${n.h}px;pointer-events:auto;">
+    // Note positions are stored in gvpages coordinates at baseW; scale to current gvW
+    const baseW = n.baseW || gvRW;
+    const scale = gvW / baseW;
+    const x = n.x * scale;
+    const y = n.y * scale;
+    const w = n.w * scale;
+    const h_ = n.h * scale;
+    h+=`<div class="gvnote${selClass}" data-uid="${n.uid}" style="left:${x}px;top:${y}px;width:${w}px;height:${h_}px;pointer-events:auto;">
       <div class="gvnote-hdr" title="Drag to move"></div>
       <div class="gvnote-text" contenteditable="true" spellcheck="false" data-uid="${n.uid}">${esc(n.text)}</div>
     </div>`;
@@ -2748,16 +2744,19 @@ function renderGridNotesLayer(){
       tx=pageX+col*bw+col*gap;
       ty=pageY+row*bw+row*gap;
     }
-    const nx=note.x+note.w/2,ny=note.y+note.h/2;
-    h+=`<svg class="gvnote-conn" style="position:absolute;left:0;top:0;pointer-events:none;width:${Math.max(nx,tx)+50+offsetX}px;height:${Math.max(ny,ty)+50+offsetY}px;">
-      <path d="M${nx+offsetX} ${ny+offsetY} L${tx+offsetX} ${ty+offsetY}" stroke="var(--gold)" stroke-width="2" stroke-dasharray="6,4" fill="none" stroke-linecap="round"/>
+    // Scale note position for connection endpoint
+    const baseW = note.baseW || gvRW;
+    const scale = gvW / baseW;
+    const nx = (note.x + note.w/2) * scale;
+    const ny = (note.y + note.h/2) * scale;
+    const tx_ = tx * scale;
+    const ty_ = ty * scale;
+    h+=`<svg class="gvnote-conn" style="position:absolute;left:0;top:0;pointer-events:none;width:${Math.max(nx,tx_)+50}px;height:${Math.max(ny,ty_)+50}px;">
+      <path d="M${nx} ${ny} L${tx_} ${ty_}" stroke="var(--gold)" stroke-width="2" stroke-dasharray="6,4" fill="none" stroke-linecap="round"/>
     </svg>`;
   }
   h+='</div>';
-  // Remove existing layer and insert new one
-  const existing=gvwrap.querySelector('.gvnotes-layer');
-  if(existing)existing.remove();
-  gvwrap.insertAdjacentHTML('beforeend',h);
+  return h;
 }
 // Notes rendering in Grid View
 function renderGridNotes(){
