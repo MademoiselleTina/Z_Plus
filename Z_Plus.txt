@@ -159,7 +159,7 @@ select.field:focus{background:var(--panel);box-shadow:var(--btn-raise),0 0 0 2px
 /* Grid view: all pages as button grids (navigation; select with a click, parameters in the inspector) */
 .gridview{position:absolute;inset:0;z-index:5;overflow:auto;scrollbar-width:none;cursor:grab;touch-action:auto;background:var(--canvas);padding:16px 18px 60px}
 .gridview::-webkit-scrollbar{display:none}.ifl{display:flex;flex-direction:column;gap:6px}.ifk{all:unset;cursor:pointer;border-bottom:1px dotted var(--line-2)}.ifk:hover{color:var(--ink);border-bottom-color:var(--ink-2)}.ifk:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:2px}.ifr{display:grid;grid-template-columns:96px 1fr;gap:1px 10px;font-size:12.5px;line-height:1.35}.ifr .ifn{font-weight:600;color:var(--ink)}.ifr .ifd{text-align:right;white-space:nowrap}.ifr .ifd .devb{margin-left:4px}.ifr .ifi{grid-column:1/-1;color:var(--ink-2)}
-.gvwrap{width:max-content}.gvpages{--gvcg:calc(21px + 1.2 * clamp(14px, var(--cw,20px) * .34, 17px));display:flex;align-items:flex-start;gap:var(--gvcg);width:max-content;transform-origin:0 0}
+.gvwrap{width:max-content}.gvpages{--gvcg:calc(21px + 1.2 * clamp(14px, var(--cw,20px) * .34, 17px));display:flex;align-items:flex-start;gap:var(--gvcg);width:max-content;transform-origin:0 0;position:relative}
 .gvgrid{display:grid;gap:16px var(--gvcg); /* columns as far apart as the grids of two rows */width:max-content}
 /* Notes in Grid View */
 .gvnotes{position:absolute;left:0;top:0;pointer-events:none;z-index:10}
@@ -2975,7 +2975,7 @@ gvEl.addEventListener('contextmenu',e=>{
   $('#gvAddNote').onclick=()=>{
     commit();
     const uid=M.uid();
-    st.notes.push({uid,text:'',x:noteX,y:noteY,w:200,h:100});
+    st.notes.push({uid,text:'',x:noteX,y:noteY,w:200,h:100,baseW:gvRW});
     noteSel=uid;
     // Preserve scroll position during renderGridView
     const scrollLeft=gvEl.scrollLeft,scrollTop=gvEl.scrollTop;
@@ -3049,17 +3049,12 @@ gvEl.addEventListener('pointermove',e=>{
     if(n){
       n.x=noteDrag.ox+dx;
       n.y=noteDrag.oy+dy;
-      // Update DOM element in .gvnotes-layer (child of .gvwrap)
-      // Note positions are stored in gvpages coordinates; need to add offset for .gvnotes-layer
+      // Update DOM element in .gvnotes-layer (now inside .gvpages)
+      // Note positions are stored in gvpages coordinates
       const gvpages=gvEl.querySelector('.gvpages');
-      const gvwrap=gvEl.querySelector('.gvwrap');
-      if(gvpages&&gvwrap){
-        const wrapRect=gvwrap.getBoundingClientRect();
-        const pagesRect=gvpages.getBoundingClientRect();
-        const offsetX=pagesRect.left-wrapRect.left;
-        const offsetY=pagesRect.top-wrapRect.top;
+      if(gvpages){
         const el=gvEl.querySelector(`.gvnotes-layer .gvnote[data-uid="${n.uid}"]`);
-        if(el){el.style.left=(n.x+offsetX)+'px';el.style.top=(n.y+offsetY)+'px';}
+        if(el){el.style.left=n.x+'px';el.style.top=n.y+'px';}
       }
     }
   }
@@ -3071,6 +3066,7 @@ gvEl.addEventListener('pointermove',e=>{
     commit();
     const n=st.notes.find(x=>x.uid===noteDrag.uid);
     if(n){
+      n.baseW = gvRW;
       toast('Note moved.',2000);
     }
   }
@@ -3095,6 +3091,7 @@ gvEl.addEventListener('input',e=>{
       const minH=60;
       const contentH=textEl.scrollHeight;
       n.h=Math.max(minH,contentH+hdr.offsetHeight);
+      n.baseW = gvRW;
       el.style.height=n.h+'px';
     }
   }
