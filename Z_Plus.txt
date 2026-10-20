@@ -2693,11 +2693,31 @@ function renderGridNotesLayerHTML(){
   let h='<div class="gvnotes-layer" style="position:absolute;left:0;top:0;pointer-events:none;z-index:10;">';
   for(const n of st.notes){
     const selClass=noteSel===n.uid?' gvnote-sel':'';
-    // Note positions are stored in gvpages coordinates at baseW; scale to current gvW
+    // Note positions stored relative to page grid; compute absolute position
+    let x, y;
+    if (n.pageIndex !== undefined && n.offsetX !== undefined && n.offsetY !== undefined) {
+      // Position relative to page grid
+      const cols = gvCols();
+      const pageIdx = n.pageIndex;
+      const pageCol = pageIdx % cols;
+      const pageRow = Math.floor(pageIdx / cols);
+      const bw = gvW/8;
+      const gap = gvGap(gvW);
+      const pageW = gvW;
+      const pageH = gvW*5/8+36;
+      const pageX = pageCol*(pageW+gap);
+      const pageY = pageRow*(pageH+gap);
+      x = pageX + n.offsetX;
+      y = pageY + n.offsetY;
+    } else {
+      // Legacy: absolute position in gvpages coordinates at baseW
+      const baseW = n.baseW || gvRW;
+      const scale = gvW / baseW;
+      x = n.x * scale;
+      y = n.y * scale;
+    }
     const baseW = n.baseW || gvRW;
     const scale = gvW / baseW;
-    const x = n.x * scale;
-    const y = n.y * scale;
     const w = n.w * scale;
     const h_ = n.h * scale;
     h+=`<div class="gvnote${selClass}" data-uid="${n.uid}" style="left:${x}px;top:${y}px;width:${w}px;height:${h_}px;pointer-events:auto;">
@@ -2744,13 +2764,15 @@ function renderGridNotesLayerHTML(){
       tx=pageX+col*bw+col*gap;
       ty=pageY+row*bw+row*gap;
     }
-    // Scale note position for connection endpoint
+    // Connection endpoints: note endpoint in gvW coordinates, target already in gvW coordinates
     const baseW = note.baseW || gvRW;
     const scale = gvW / baseW;
     const nx = (note.x + note.w/2) * scale;
     const ny = (note.y + note.h/2) * scale;
-    const tx_ = tx * scale;
-    const ty_ = ty * scale;
+    // tx, ty are already in gvW coordinates (current grid view coordinate system)
+    // Do NOT scale them - they're already in the correct coordinate system
+    const tx_ = tx;
+    const ty_ = ty;
     h+=`<svg class="gvnote-conn" style="position:absolute;left:0;top:0;pointer-events:none;width:${Math.max(nx,tx_)+50}px;height:${Math.max(ny,ty_)+50}px;">
       <path d="M${nx} ${ny} L${tx_} ${ty_}" stroke="var(--gold)" stroke-width="2" stroke-dasharray="6,4" fill="none" stroke-linecap="round"/>
     </svg>`;
@@ -2975,7 +2997,61 @@ gvEl.addEventListener('contextmenu',e=>{
   $('#gvAddNote').onclick=()=>{
     commit();
     const uid=M.uid();
-    st.notes.push({uid,text:'',x:noteX,y:noteY,w:200,h:100,baseW:gvRW});
+    // Determine which page grid the note is nearest to (or if in empty space)
+    const gvpages = gvEl.querySelector('.gvpages');
+    const pagesRect = gvpages.getBoundingClientRect();
+    const gvwrap = gvEl.querySelector('.gvwrap');
+    const wrapRect = gvwrap.getBoundingClientRect();
+    const wrapOffsetX = pagesRect.left - wrapRect.left;
+    const wrapOffsetY = pagesRect.top - wrapRect.top;
+    
+    // Find the nearest page grid
+    const pageEls = gvpages.querySelectorAll('.gvpage');
+    let nearestPage = null;
+    let minDist = Infinity;
+    let nearestPageIndex = -1;
+    
+    pageEls.forEach((pageEl, idx) => {
+      const pageRect = pageEl.getBoundingClientRect();
+      const centerX = pageRect.left + pageRect.width / 2;
+      const centerY = pageRect.top + pageRect.height / 2;
+      const dist = Math.hypot(e.clientX - centerX, e.clientY - centerY);
+      if (dist < minDist) {
+        minDist = dist;
+        nearestPage = pageEl;
+        nearestPageIndex = idx;
+      }
+    });
+    
+    // Compute offset from page grid origin (in gvW coordinates)
+    let pageIndex = -1;
+    let noteOffsetX = 0, noteOffsetY = 0;
+    
+    if (nearestPage && minDist < 500) { // Within reasonable distance of a page
+      const pageRect = nearestPage.getBoundingClientRect();
+      const pageIdx = parseInt(nearestPage.querySelector('.grid8')?.dataset.page || '0');
+      // Page grid origin in gvpages coordinates (unscaled)
+      const pageOriginX = pageRect.left - pagesRect.left;
+      const pageOriginY = pageRect.top - pagesRect.top;
+      // Convert to gvW coordinates (divide by CSS scale)
+      const gvpagesStyle = window.getComputedStyle(gvpages);
+      const transform = gvpagesStyle.transform;
+      let cssScale = 1;
+      if (transform && transform !== 'none') {
+        const m = transform.match(/matrix\(([^)]+)\)/);
+        if (m) { cssScale = parseFloat(m[1].split(',')[0]) || 1; }
+      }
+      noteOffsetX = (noteX - pageOriginX) / cssScale;
+      noteOffsetY = (noteY - pageOriginY) / cssScale;
+      pageIndex = pageIdx;
+    } else {
+      // In empty space - store as absolute position in gvW coordinates
+      noteOffsetX = noteX;
+      noteOffsetY = noteY;
+      pageIndex = -1;
+    }
+    
+    st.notes.push({uid,text:'',offsetX:noteOffsetX,offsetY:noteOffsetY,pageIndex,w:200,h:100,baseW:gvRW});
     noteSel=uid;
     // Preserve scroll position during renderGridView
     const scrollLeft=gvEl.scrollLeft,scrollTop=gvEl.scrollTop;
@@ -3028,34 +3104,27 @@ gvEl.addEventListener('pointerdown',e=>{
   if(!n)return;
   e.preventDefault();
   e.stopPropagation();
-  // Get current effective scale from baseW to screen pixels
-  // Note is inside .gvpages which has CSS transform; note CSS position is in baseW space
+  // Get CSS transform scale (for converting screen pixels to gvW coordinates)
   const gvpages=gvEl.querySelector('.gvpages');
-  const cssScale=gvpages?parseFloat(gvpages.style.transform.replace(/[^0-9.-]/g,''))||1:1;
-  // Note positions are stored in baseW; CSS left/top = n.x * (gvW/baseW) but renderGridNotesLayerHTML uses scale=gvW/baseW
-  // During preview: baseW=gvRW, gvW updated, render not re-run, so CSS pos = n.x (scale=1), .gvpages transform = gvW/gvRW
-  // After commit: baseW=gvRW=gvW, render re-run, CSS pos = n.x, .gvpages transform = 1
-  // Effective scale from baseW to screen = cssScale (since render scale = 1 during preview, 1 after commit)
-  const effectiveScale = cssScale;
-  // Capture grab offset in baseW coordinates: distance from note's left edge to mouse pointer
+  const cssScale = gvpages ? parseFloat(gvpages.style.transform.replace(/[^0-9.-]/g,'')) || 1 : 1;
+  // Capture grab offset in screen pixels (relative to note's left edge)
   const noteEl = gvEl.querySelector(`.gvnotes-layer .gvnote[data-uid="${uid}"]`);
   let grabOffsetX = 0, grabOffsetY = 0;
   if (noteEl) {
     const noteRect = noteEl.getBoundingClientRect();
-    const pagesRect = gvpages.getBoundingClientRect();
-    // Grab offset in screen pixels relative to note's left edge
-    const screenGrabX = e.clientX - noteRect.left;
-    const screenGrabY = e.clientY - noteRect.top;
-    // Convert to baseW coordinates
-    grabOffsetX = screenGrabX / effectiveScale;
-    grabOffsetY = screenGrabY / effectiveScale;
+    grabOffsetX = e.clientX - noteRect.left;
+    grabOffsetY = e.clientY - noteRect.top;
   }
-  // Store start mouse position in BASEW coordinates (screen pixels / effectiveScale)
-  const startMouseX = e.clientX / effectiveScale;
-  const startMouseY = e.clientY / effectiveScale;
-  // ox/oy = note's left edge position in baseW coordinates at drag start
-  // grabOffsetX/Y = distance from note's left edge to mouse pointer in baseW coordinates
-  noteDrag={uid,sx:startMouseX,sy:startMouseY,ox:n.x,oy:n.y,moved:false,id:e.pointerId,scale:effectiveScale,grabOffsetX,grabOffsetY};
+  // Store start mouse position in SCREEN pixels
+  const startMouseX = e.clientX;
+  const startMouseY = e.clientY;
+  // Store CSS scale at drag start for consistent movement calculation
+  const dragCssScale = cssScale;
+  // Store note's current page-relative position (in gvW coordinates)
+  const notePageIndex = n.pageIndex;
+  const noteOffsetX = n.offsetX !== undefined ? n.offsetX : n.x;
+  const noteOffsetY = n.offsetY !== undefined ? n.offsetY : n.y;
+  noteDrag={uid,sx:e.clientX,sy:e.clientY,ox:noteOffsetX,oy:noteOffsetY,moved:false,id:e.pointerId,cssScale:dragCssScale,grabOffsetX,grabOffsetY,pageIndex:notePageIndex,offsetX:noteOffsetX,offsetY:noteOffsetY};
   noteDragging=true;
   try{gvEl.setPointerCapture(e.pointerId)}catch(_){}
 });
@@ -3064,34 +3133,54 @@ gvEl.addEventListener('pointermove',e=>{
   if(!noteDrag||noteDrag.id!==e.pointerId)return;
   // Drag threshold in SCREEN pixels (consistent with pointer event coordinates)
   if(!noteDrag.moved){
-    const screenDx = e.clientX - (noteDrag.sx * noteDrag.scale);
-    const screenDy = e.clientY - (noteDrag.sy * noteDrag.scale);
+    const screenDx = e.clientX - noteDrag.sx;
+    const screenDy = e.clientY - noteDrag.sy;
     if(Math.abs(screenDx)+Math.abs(screenDy)>3){
       noteDrag.moved=true;
       gvEl.classList.add('gvmoving');
     }
   }
   if(noteDrag.moved){
-    // Convert current pointer position to baseW coordinates using effective scale
-    const currentMouseX = e.clientX / noteDrag.scale;
-    const currentMouseY = e.clientY / noteDrag.scale;
-    // Movement in baseW coordinates = current mouse position - start mouse position (both in baseW)
-    const dx = currentMouseX - noteDrag.sx;
-    const dy = currentMouseY - noteDrag.sy;
+    // Convert pointer movement from screen pixels to gvW coordinates
+    // Note positions are stored in gvW coordinates (page-relative offsets in gvW space)
+    // The CSS transform scale converts gvW to screen pixels
+    const dx = (e.clientX - noteDrag.sx) / noteDrag.cssScale;
+    const dy = (e.clientY - noteDrag.sy) / noteDrag.cssScale;
     const n=st.notes.find(x=>x.uid===noteDrag.uid);
     if(n){
-      // New position = original position + movement in baseW coordinates
-      n.x = noteDrag.ox + dx;
-      n.y = noteDrag.oy + dy;
-      // Update DOM element with same scale as renderGridNotesLayerHTML: n.x * (gvW / baseW)
+      // Update page-relative coordinates (in gvW coordinates)
+      n.offsetX = noteDrag.offsetX + dx;
+      n.offsetY = noteDrag.offsetY + dy;
+      // Update DOM element with same scale as renderGridNotesLayerHTML
       const baseW = n.baseW || gvRW;
       const renderScale = gvW / baseW;
       const gvpages=gvEl.querySelector('.gvpages');
       if(gvpages){
         const el=gvEl.querySelector(`.gvnotes-layer .gvnote[data-uid="${n.uid}"]`);
         if(el){
-          el.style.left=(n.x * renderScale)+'px';
-          el.style.top=(n.y * renderScale)+'px';
+          // Recompute absolute position from page-relative coordinates
+          let x, y;
+          if (n.pageIndex !== undefined && n.pageIndex >= 0) {
+            const cols = gvCols();
+            const pageIdx = n.pageIndex;
+            const pageCol = pageIdx % gvCols();
+            const pageRow = Math.floor(pageIdx / gvCols());
+            const bw = gvW/8;
+            const gap = gvGap(gvW);
+            const pageW = gvW;
+            const pageH = gvW*5/8+36;
+            const pageX = pageCol*(pageW+gap);
+            const pageY = pageRow*(pageH+gap);
+            x = pageX + n.offsetX;
+            y = pageY + n.offsetY;
+          } else {
+            // Legacy: absolute position
+            x = n.offsetX;
+            y = n.offsetY;
+          }
+          // Apply render scale for CSS positioning
+          el.style.left=(x)+'px';
+          el.style.top=(y)+'px';
         }
       }
     }
@@ -3101,10 +3190,100 @@ gvEl.addEventListener('pointermove',e=>{
 ['pointerup','pointercancel'].forEach(ev=>gvEl.addEventListener(ev,e=>{
   if(!noteDrag||noteDrag.id!==e.pointerId)return;
   if(noteDrag.moved){
-    commit();
     const n=st.notes.find(x=>x.uid===noteDrag.uid);
     if(n){
+      // Determine which page the note is now on based on its final position
+      // Note's final position is in gvW coordinates (page-relative or absolute)
+      let finalX, finalY;
+      if (n.pageIndex !== undefined && n.pageIndex >= 0) {
+        const cols = gvCols();
+        const pageIdx = n.pageIndex;
+        const pageCol = pageIdx % cols;
+        const pageRow = Math.floor(pageIdx / cols);
+        const bw = gvW/8;
+        const gap = gvGap(gvW);
+        const pageW = gvW;
+        const pageH = gvW*5/8+36;
+        const pageX = pageCol*(pageW+gap);
+        const pageY = pageRow*(pageH+gap);
+        finalX = pageX + n.offsetX;
+        finalY = pageY + n.offsetY;
+      } else {
+        finalX = n.offsetX;
+        finalY = n.offsetY;
+      }
+      
+      // Find which page grid contains this position (or is nearest)
+      const gvpages = gvEl.querySelector('.gvpages');
+      if (gvpages) {
+        const pageEls = gvpages.querySelectorAll('.gvpage');
+        let nearestPage = null;
+        let minDist = Infinity;
+        let nearestPageIndex = -1;
+        
+        pageEls.forEach((pageEl, idx) => {
+          const pageRect = pageEl.getBoundingClientRect();
+          const pagesRect = gvpages.getBoundingClientRect();
+          const gvpagesStyle = window.getComputedStyle(gvpages);
+          const transform = gvpagesStyle.transform;
+          let cssScale = 1;
+          if (transform && transform !== 'none') {
+            const m = transform.match(/matrix\(([^)]+)\)/);
+            if (m) { cssScale = parseFloat(m[1].split(',')[0]) || 1; }
+          }
+          // Page grid origin in gvW coordinates
+          const pageOriginX = (pageRect.left - pagesRect.left) / cssScale;
+          const pageOriginY = (pageRect.top - pagesRect.top) / cssScale;
+          const pageW = gvW;
+          const pageH = gvW*5/8+36;
+          
+          // Check if note is within this page's bounds
+          if (finalX >= pageOriginX && finalX <= pageOriginX + pageW &&
+              finalY >= pageOriginY && finalY <= pageOriginY + pageH) {
+            nearestPage = pageEl;
+            nearestPageIndex = parseInt(pageEl.querySelector('.grid8')?.dataset.page || String(idx));
+            minDist = 0;
+          } else {
+            // Distance to page center
+            const centerX = pageOriginX + pageW / 2;
+            const centerY = pageOriginY + pageH / 2;
+            const dist = Math.hypot(finalX - centerX, finalY - centerY);
+            if (dist < minDist) {
+              minDist = dist;
+              nearestPage = pageEl;
+              nearestPageIndex = parseInt(pageEl.querySelector('.grid8')?.dataset.page || String(idx));
+            }
+          }
+        });
+        
+        // Update pageIndex and convert to page-relative coordinates
+        if (nearestPage && minDist < 500) {
+          const pageRect = nearestPage.getBoundingClientRect();
+          const pagesRect = gvpages.getBoundingClientRect();
+          const gvpagesStyle = window.getComputedStyle(gvpages);
+          const transform = gvpagesStyle.transform;
+          let cssScale = 1;
+          if (transform && transform !== 'none') {
+            const m = transform.match(/matrix\(([^)]+)\)/);
+            if (m) { cssScale = parseFloat(m[1].split(',')[0]) || 1; }
+          }
+          const pageOriginX = (pageRect.left - pagesRect.left) / cssScale;
+          const pageOriginY = (pageRect.top - pagesRect.top) / cssScale;
+          n.offsetX = finalX - pageOriginX;
+          n.offsetY = finalY - pageOriginY;
+          n.pageIndex = nearestPageIndex;
+        } else {
+          // In empty space - keep as absolute
+          n.offsetX = finalX;
+          n.offsetY = finalY;
+          n.pageIndex = -1;
+        }
+      }
+      
+      // Update baseW to current gvRW
       n.baseW = gvRW;
+      
+      commit();
       toast('Note moved.',2000);
     }
   }
