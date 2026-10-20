@@ -3062,9 +3062,14 @@ gvEl.addEventListener('pointerdown',e=>{
 
 gvEl.addEventListener('pointermove',e=>{
   if(!noteDrag||noteDrag.id!==e.pointerId)return;
-  if(!noteDrag.moved&&Math.abs(e.clientX-noteDrag.sx)+Math.abs(e.clientY-noteDrag.sy)>3){
-    noteDrag.moved=true;
-    gvEl.classList.add('gvmoving');
+  // Drag threshold in SCREEN pixels (consistent with pointer event coordinates)
+  if(!noteDrag.moved){
+    const screenDx = e.clientX - (noteDrag.sx * noteDrag.scale);
+    const screenDy = e.clientY - (noteDrag.sy * noteDrag.scale);
+    if(Math.abs(screenDx)+Math.abs(screenDy)>3){
+      noteDrag.moved=true;
+      gvEl.classList.add('gvmoving');
+    }
   }
   if(noteDrag.moved){
     // Convert current pointer position to baseW coordinates using effective scale
@@ -3078,15 +3083,16 @@ gvEl.addEventListener('pointermove',e=>{
       // New position = original position + movement in baseW coordinates
       n.x = noteDrag.ox + dx;
       n.y = noteDrag.oy + dy;
-      // Update DOM element in .gvnotes-layer (now inside .gvpages)
-      // Note positions are stored in baseW coordinates; renderGridNotesLayerHTML uses scale=gvW/baseW
-      // During preview: baseW=gvRW, gvW updated, CSS pos = n.x (scale=1), .gvpages transform = gvW/gvRW
-      // After commit: baseW=gvRW=gvW, CSS pos = n.x, .gvpages transform = 1
-      // So CSS left/top = n.x (always in baseW coordinates)
+      // Update DOM element with same scale as renderGridNotesLayerHTML: n.x * (gvW / baseW)
+      const baseW = n.baseW || gvRW;
+      const renderScale = gvW / baseW;
       const gvpages=gvEl.querySelector('.gvpages');
       if(gvpages){
         const el=gvEl.querySelector(`.gvnotes-layer .gvnote[data-uid="${n.uid}"]`);
-        if(el){el.style.left=n.x+'px';el.style.top=n.y+'px';}
+        if(el){
+          el.style.left=(n.x * renderScale)+'px';
+          el.style.top=(n.y * renderScale)+'px';
+        }
       }
     }
   }
