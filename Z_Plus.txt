@@ -161,6 +161,15 @@ select.field:focus{background:var(--panel);box-shadow:var(--btn-raise),0 0 0 2px
 .gridview::-webkit-scrollbar{display:none}.ifl{display:flex;flex-direction:column;gap:6px}.ifk{all:unset;cursor:pointer;border-bottom:1px dotted var(--line-2)}.ifk:hover{color:var(--ink);border-bottom-color:var(--ink-2)}.ifk:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:2px}.ifr{display:grid;grid-template-columns:96px 1fr;gap:1px 10px;font-size:12.5px;line-height:1.35}.ifr .ifn{font-weight:600;color:var(--ink)}.ifr .ifd{text-align:right;white-space:nowrap}.ifr .ifd .devb{margin-left:4px}.ifr .ifi{grid-column:1/-1;color:var(--ink-2)}
 .gvwrap{width:max-content}.gvpages{--gvcg:calc(21px + 1.2 * clamp(14px, var(--cw,20px) * .34, 17px));display:flex;align-items:flex-start;gap:var(--gvcg);width:max-content;transform-origin:0 0}
 .gvgrid{display:grid;gap:16px var(--gvcg); /* columns as far apart as the grids of two rows */width:max-content}
+/* Notes in Grid View */
+.gvnotes{position:absolute;left:0;top:0;pointer-events:none;z-index:10}
+.gvnote{position:absolute;background:var(--panel);border:1px solid var(--gold);border-radius:6px;box-shadow:var(--shadow);min-width:120px;min-height:60px;display:flex;flex-direction:column;overflow:hidden}
+.gvnote-sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent),var(--shadow)}
+.gvnote-hdr{height:20px;background:var(--panel-2);border-bottom:1px solid var(--line-2);cursor:move;display:flex;align-items:center;padding:0 8px;font:600 11px var(--f-ui);color:var(--ink-2);user-select:none}
+.gvnote-hdr::before{content:'📝';margin-right:6px;font-size:12px}
+.gvnote-text{flex:1;padding:6px 8px;font:13px/1.4 var(--f-ui);color:var(--ink);outline:none;overflow:auto;white-space:pre-wrap;word-wrap:break-word;min-height:40px}
+.gvnote-text:focus{background:var(--field-focus)}
+.gvnote-conn{pointer-events:none;z-index:5}
 .gridview.panning{cursor:grabbing}.gridview.panning *{cursor:grabbing!important}
 .gvpage.gveuro .grid8{grid-template-columns:repeat(12,var(--bw));width:max-content} /* 0.484: Euroburo Interfaces as on the front panel, left of the pages */
 .gvpage.gveuro .gvframe{grid-area:1/4/6/12;border:1px solid var(--line-2);border-radius:var(--gr,4px);margin:calc(var(--g) * .2);pointer-events:none} /* where the 5 x 8 grid sits: its edges line up with the buttons around it; 0.485: a second frame above PB 1-2 (user sketch); 0.486: both frames a little smaller, 20 % more room to the buttons */
@@ -841,7 +850,7 @@ ZOIA badge: this module is for the ZOIA only. It uses ZOIA hardware or pedal fun
   // default patch name: local date/time as YYYYMMDD-HHMM (13 chars, fits the 15-char limit; '_' is not a ZOIA name character)
   function defaultName(d) { d = d || new Date(); const p = (n) => String(n).padStart(2, '0'); return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()); }
   function newState() {
-    return { name: defaultName(), slot: 0, modules: [], conns: [], pages: [''], rawPages: null, rawPageNames: null, rawName: null, rawNameText: null, stars: [], view: { x: 40, y: 20, k: 1 }, activePage: 0, layoutMode: 'page' };
+    return { name: defaultName(), slot: 0, modules: [], conns: [], pages: [''], rawPages: null, rawPageNames: null, rawName: null, rawNameText: null, stars: [], notes: [], noteConns: [], view: { x: 40, y: 20, k: 1 }, activePage: 0, layoutMode: 'page' };
   }
 
   // display name of a block or option: Empress' wording (key/scale jacks, speed/pitch, CV, FM …) with a capital first letter, so each
@@ -2149,13 +2158,17 @@ const X=m=>m.x*spreadK();
 const colHex=c=>(COLORS[c]||COLORS[7])[1];
 
 let st=null, sel=null /* {kind:'m'|'c', uid} */, pending=null, pageFilter=-1;
+// Notes state
+let noteSel=null, noteDrag=null, noteConnDrag=null;
+let noteDragging=false; // guard to block other gvEl handlers during note drag
 const undoStack=[], redoStack=[];
 
 // ---------- persistence of state (undo, autosave, project file) ----------
 const b64=a=>{let s='';const u=Uint8Array.from(a||[]);for(let i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s)};
 const unb64=s=>Uint8Array.from(atob(s||''),c=>c.charCodeAt(0));
 function pack(s){return JSON.stringify({...s,rawName:s.rawName?b64(s.rawName):null,rawPages:s.rawPages?s.rawPages.map(b64):null,
-  modules:s.modules.map(m=>({...m,rawName:m.rawName?b64(m.rawName):null,saved:b64(m.saved)}))})}
+  modules:s.modules.map(m=>({...m,rawName:m.rawName?b64(m.rawName):null,saved:b64(m.saved)})),
+  notes:s.notes,noteConns:s.noteConns})}
 const APP_VERSION='0.511';
 const UID_OK=/^[A-Za-z0-9_]{1,24}$/; // internal ids (u123): anything with other characters in a project file is rejected
 const num=(v,lo,hi)=>{v=Math.round(+v);return Number.isFinite(v)?Math.max(lo,Math.min(hi,v)):lo};
@@ -2169,7 +2182,7 @@ function unpack(j){const s=JSON.parse(j);const bad=why=>{throw new Error('This i
     rawPages:Array.isArray(s.rawPages)?s.rawPages.slice(0,64).map(x=>b64(x,'page names')):null,rawPageNames:Array.isArray(s.rawPageNames)?s.rawPageNames.slice(0,64).map(x=>str(x,64)):null,
     rawName:s.rawName?b64(s.rawName,'patch name'):null,rawNameText:s.rawNameText==null?null:str(s.rawNameText,64),
     activePage:num(s.activePage,0,63),layoutMode:s.layoutMode==='signal'?'signal':'page',legacyNoColors:!!s.legacyNoColors,legacyNoNames:!!s.legacyNoNames,
-    view:s.view?{x:+s.view.x||0,y:+s.view.y||0,k:Math.min(2.5,Math.max(.1,+s.view.k||1))}:{x:40,y:20,k:1},modules:[],conns:[],stars:[]};
+    view:s.view?{x:+s.view.x||0,y:+s.view.y||0,k:Math.min(2.5,Math.max(.1,+s.view.k||1))}:{x:40,y:20,k:1},modules:[],conns:[],stars:[],notes:[],noteConns:[]};
   if(s.src&&typeof s.src==='object')out.src={author:str(s.src.author,80),license:str(s.src.license,120)}; // where the patch came from (PatchStorage): author and license
   if(!out.pages.length)out.pages=[''];
   const ids=new Set(),idOk=v=>{v=String(v);if(!UID_OK.test(v))bad('invalid id');return v};
@@ -2193,7 +2206,13 @@ function unpack(j){const s=JSON.parse(j);const bad=why=>{throw new Error('This i
   for(const x of Array.isArray(s.stars)?s.stars:[]){if(!x||typeof x!=='object')continue; // stars whose target does not exist are dropped
     if(x.conn!=null){const c=String(x.conn);if(cids.has(c))out.stars.push({conn:c,cc:num(x.cc,-1,127),rest:num(x.rest,0,0x7fffff)})}
     else{const m=String(x.m);if(ids.has(m))out.stars.push({m,b:num(x.b,0,255),cc:num(x.cc,-1,127)})}}
-  let max=0;for(const v of [...ids,...cids])max=Math.max(max,+String(v).slice(1)||0);M.setUidBase(max+1);return out}
+  // Notes and note connections (backward compatible)
+  for(const n of Array.isArray(s.notes)?s.notes:[]){if(!n||typeof n!=='object')continue;const uid=idOk(n.uid);if(ids.has(uid))continue;ids.add(uid);
+    out.notes.push({uid, text:str(n.text,2000), x:+n.x||0, y:+n.y||0, w:num(n.w,100,2000), h:num(n.h,50,2000)})}
+  const ncids=new Set();
+  for(const c of Array.isArray(s.noteConns)?s.noteConns:[]){if(!c||typeof c!=='object')continue;const uid=idOk(c.uid);if(ncids.has(uid)||ids.has(uid))continue;ncids.add(uid);
+    out.noteConns.push({uid, note:idOk(c.note), target:c.target, targetType:c.targetType||'module', targetPos:num(c.targetPos,0,255)})}
+  let max=0;for(const v of [...ids,...cids,...ncids])max=Math.max(max,+String(v).slice(1)||0);M.setUidBase(max+1);return out}
 // unsaved-changes flag: set by every edit, cleared by New, Open, Save project and Export patch; kept across reloads
 let bootHold=false; // true while the start dialog decides between the stored patch and a new one; nothing is overwritten meanwhile
 let dirty=false;try{dirty=localStorage.getItem('zoe-dirty')==='1'}catch(e){}
@@ -2616,11 +2635,18 @@ function gvZoomAt(f,cx,cy){const w=Math.min(GV_MAXW,Math.max(gvMinW(),gvW*f));if
   const x=(gvEl.scrollLeft+px-pad[0])/s0,y=(gvEl.scrollTop+py-pad[1])/s0;gvW=w;
   // the label text stays at its largest size on screen while the grids are scaled, so it does not grow and then jump back
   const g=gvEl.querySelector('.gvpages');if(g){g.style.transform=`scale(${s1})`;g.style.setProperty('--gvcap',(17/s1).toFixed(2)+'px')}
+  // Scale notes during zoom preview
+  gvScaleNotes(s1);
   gvEl.scrollLeft=x*s1+pad[0]-px;gvEl.scrollTop=y*s1+pad[1]-py;
   // 0.506: the page titles do not scale with the grids (--gvcap), so the grids shift a little while zooming; the spot of the grid
   // under the pointer, taken at the first step (again when the pointer moved), is put back under the pointer at every step and after the new render
   if(!gvZoomAt.a)gvZoomAt.a=a0;gvKeep(gvZoomAt.a,cx,cy);
   clearTimeout(gvZoomAt.t);gvZoomAt.t=setTimeout(()=>{const a=gvZoomAt.a;gvZoomAt.a=null;gvCommit(cx,cy,a)},150)}
+// Ensure notes are also scaled during zoom preview
+// Notes are now in .gvnotes-layer (child of .gvwrap), not affected by .gvpages transform
+function gvScaleNotes(scale){
+  // No scaling needed for notes layer since it's outside .gvpages transform
+}
 // the grid nearest to a point and the point's place in it (fractions of its width and height)
 function gvAnchor(cx,cy){const pages=[...gvEl.querySelectorAll('.grid8')];if(!pages.length)return null;
   const d=r=>Math.hypot(Math.max(r.left-cx,0,cx-r.right),Math.max(r.top-cy,0,cy-r.bottom));
@@ -2628,7 +2654,7 @@ function gvAnchor(cx,cy){const pages=[...gvEl.querySelectorAll('.grid8')];if(!pa
 function gvKeep(a,cx,cy){if(!a)return;const g=gvEl.querySelector(`.grid8[data-page="${a.p}"]`);if(!g)return;const r=g.getBoundingClientRect();gvEl.scrollLeft+=r.left+a.fx*r.width-cx;gvEl.scrollTop+=r.top+a.fy*r.height-cy}
 const gvPad=()=>{const c=getComputedStyle(gvEl);return [parseFloat(c.paddingLeft)+gvEl.clientWidth,parseFloat(c.paddingTop)+gvEl.clientHeight]}; // the grids sit inside one view size of free room on every side
 // render at the zoomed size; the grid under the pointer keeps the same point under the pointer
-function gvCommit(cx,cy,a0){if(!gridView)return;const a=a0||gvAnchor(cx,cy);renderGridView();gvKeep(a,cx,cy)}
+function gvCommit(cx,cy,a0){if(!gridView)return;const a=a0||gvAnchor(cx,cy);const scrollLeft=gvEl.scrollLeft,scrollTop=gvEl.scrollTop;renderGridView();gvEl.scrollLeft=scrollLeft;gvEl.scrollTop=scrollTop;gvKeep(a,cx,cy);gvScaleNotes(1)}
 function gvZoomMid(f){const v=gvEl.getBoundingClientRect();gvZoomAt(f,v.left+v.width/2,v.top+v.height/2)}
 const gvViewKey=()=>[gvW,gvEl.scrollLeft,gvEl.scrollTop].map(Math.round).join(',');
 // Grid view: Fit with a selection shows the page of the selected module(s) (several pages, or a Euroburo Interface: the whole view)
@@ -2654,7 +2680,145 @@ function renderGridView(){if(!gridView)return;let h;gvRW=gvW;gvHi=gvSelUid(); //
   if(euroInPatch())h+=`<section class="gvpage gveuro${pageFilter>=0&&pageFilter!==M.EURO_PAGE?' gvoff':''}" style="--bw:${euroBw().toFixed(1)}px"><h4 title="Euroburo Interfaces: placed as on the front panel">Euroburo Interfaces</h4><div class="grid8" data-page="${M.EURO_PAGE}"><span class="gvframe"></span><span class="gvframe" style="grid-area:1/1/6/3"></span>${euroGridHTML()}</div></section>`;
   h+=`<div class="gvgrid" style="grid-template-columns:repeat(${gvCols()},${Math.round(gvW)}px)">`;
   for(let p=0;p<gridPages();p++)h+=`<section class="gvpage${pageFilter>=0&&p!==pageFilter?' gvoff':''}"><h4 title="${esc('Page '+p+(st.pages[p]?' · '+st.pages[p]:''))}">Page ${p}${st.pages[p]?' · '+esc(st.pages[p]):''}</h4><div class="grid8" data-page="${p}">${gridHTML(p,null)}${gvW/8>=GV_LBL?gridLabels(p):''}${gridHi(p)}</div></section>`;
-  gvEl.innerHTML=h+'</div></div></div>'}
+  gvEl.innerHTML=h+'</div></div></div>';
+  // Notes layer - rendered separately as sibling of .gvpages for stable positioning
+  renderGridNotesLayer()}
+// Notes layer rendered as child of .gvwrap (not .gvpages) for stable positioning relative to canvas
+function renderGridNotesLayer(){
+  const gvwrap=gvEl.querySelector('.gvwrap');
+  const gvpages=gvEl.querySelector('.gvpages');
+  if(!gvwrap||!gvpages)return;
+  // Compute gvpages position relative to gvwrap
+  const wrapRect=gvwrap.getBoundingClientRect();
+  const pagesRect=gvpages.getBoundingClientRect();
+  const offsetX=pagesRect.left-wrapRect.left;
+  const offsetY=pagesRect.top-wrapRect.top;
+  // Build notes HTML in gvwrap coordinates
+  if(!st.notes||!st.notes.length){
+    // Remove any existing notes layer
+    const existing=gvwrap.querySelector('.gvnotes-layer');
+    if(existing)existing.remove();
+    return;
+  }
+  let h='<div class="gvnotes-layer" style="position:absolute;left:0;top:0;pointer-events:none;z-index:10;">';
+  for(const n of st.notes){
+    const selClass=noteSel===n.uid?' gvnote-sel':'';
+    // Note positions are stored in gvpages coordinates; convert to gvwrap coordinates
+    h+=`<div class="gvnote${selClass}" data-uid="${n.uid}" style="left:${n.x+offsetX}px;top:${n.y+offsetY}px;width:${n.w}px;height:${n.h}px;pointer-events:auto;">
+      <div class="gvnote-hdr" title="Drag to move"></div>
+      <div class="gvnote-text" contenteditable="true" spellcheck="false" data-uid="${n.uid}">${esc(n.text)}</div>
+    </div>`;
+  }
+  // Note connections
+  for(const c of st.noteConns||[]){
+    const note=st.notes.find(n=>n.uid===c.note);
+    if(!note)continue;
+    let tx=0,ty=0;
+    if(c.targetType==='module'){
+      const m=byUid(c.target);
+      if(!m)continue;
+      const occ=M.occupancy(st,m.page);
+      const cell=c.targetPos>=0?c.targetPos:m.pos;
+      if(cell<0||cell>=40||!occ[cell].includes(m.uid))continue;
+      const col=cell%8,row=cell>>3;
+      const cols=gvCols();
+      const pageIdx=m.page;
+      const pageCol=pageIdx%cols;
+      const pageRow=Math.floor(pageIdx/cols);
+      const bw=gvW/8;
+      const gap=gvGap(gvW);
+      const pageW=gvW;
+      const pageH=gvW*5/8+36;
+      const pageX=pageCol*(pageW+gap);
+      const pageY=pageRow*(pageH+gap);
+      tx=pageX+col*bw+col*gap;
+      ty=pageY+row*bw+row*gap;
+    }else if(c.targetType==='cell'){
+      const [page,cell]=c.target.split(',').map(Number);
+      const col=cell%8,row=cell>>3;
+      const cols=gvCols();
+      const pageCol=page%cols;
+      const pageRow=Math.floor(page/cols);
+      const bw=gvW/8;
+      const gap=gvGap(gvW);
+      const pageW=gvW;
+      const pageH=gvW*5/8+36;
+      const pageX=pageCol*(pageW+gap);
+      const pageY=pageRow*(pageH+gap);
+      tx=pageX+col*bw+col*gap;
+      ty=pageY+row*bw+row*gap;
+    }
+    const nx=note.x+note.w/2,ny=note.y+note.h/2;
+    h+=`<svg class="gvnote-conn" style="position:absolute;left:0;top:0;pointer-events:none;width:${Math.max(nx,tx)+50+offsetX}px;height:${Math.max(ny,ty)+50+offsetY}px;">
+      <path d="M${nx+offsetX} ${ny+offsetY} L${tx+offsetX} ${ty+offsetY}" stroke="var(--gold)" stroke-width="2" stroke-dasharray="6,4" fill="none" stroke-linecap="round"/>
+    </svg>`;
+  }
+  h+='</div>';
+  // Remove existing layer and insert new one
+  const existing=gvwrap.querySelector('.gvnotes-layer');
+  if(existing)existing.remove();
+  gvwrap.insertAdjacentHTML('beforeend',h);
+}
+// Notes rendering in Grid View
+function renderGridNotes(){
+  if(!st.notes||!st.notes.length)return '';
+  let h='<div class="gvnotes" style="position:absolute;left:0;top:0;pointer-events:none;">';
+  for(const n of st.notes){
+    const selClass=noteSel===n.uid?' gvnote-sel':'';
+    h+=`<div class="gvnote${selClass}" data-uid="${n.uid}" style="left:${n.x}px;top:${n.y}px;width:${n.w}px;height:${n.h}px;pointer-events:auto;">
+      <div class="gvnote-hdr" title="Drag to move"></div>
+      <div class="gvnote-text" contenteditable="true" spellcheck="false" data-uid="${n.uid}">${esc(n.text)}</div>
+    </div>`;
+  }
+  // Note connections - compute positions from layout data
+  for(const c of st.noteConns||[]){
+    const note=st.notes.find(n=>n.uid===c.note);
+    if(!note)continue;
+    let tx=0,ty=0;
+    if(c.targetType==='module'){
+      const m=byUid(c.target);
+      if(!m)continue;
+      const occ=M.occupancy(st,m.page);
+      const cell=c.targetPos>=0?c.targetPos:m.pos;
+      if(cell<0||cell>=40||!occ[cell].includes(m.uid))continue;
+      const col=cell%8,row=cell>>3;
+      // Compute page position in the gvpages coordinate system
+      const cols=gvCols();
+      const pageIdx=m.page;
+      const pageCol=pageIdx%cols;
+      const pageRow=Math.floor(pageIdx/cols);
+      const bw=gvW/8;
+      const gap=gvGap(gvW);
+      const pageW=gvW;
+      const pageH=gvW*5/8+36; // grid height + title
+      const pageX=pageCol*(pageW+gap);
+      const pageY=pageRow*(pageH+gap);
+      tx=pageX+col*bw+col*gap;
+      ty=pageY+row*bw+row*gap;
+    }else if(c.targetType==='cell'){
+      const [page,cell]=c.target.split(',').map(Number);
+      const col=cell%8,row=cell>>3;
+      const cols=gvCols();
+      const pageCol=page%cols;
+      const pageRow=Math.floor(page/cols);
+      const bw=gvW/8;
+      const gap=gvGap(gvW);
+      const pageW=gvW;
+      const pageH=gvW*5/8+36;
+      const pageX=pageCol*(pageW+gap);
+      const pageY=pageRow*(pageH+gap);
+      tx=pageX+col*bw+col*gap;
+      ty=pageY+row*bw+row*gap;
+    }
+    const nx=note.x+note.w/2,ny=note.y+note.h/2;
+    h+=`<svg class="gvnote-conn" style="position:absolute;left:0;top:0;pointer-events:none;width:${Math.max(nx,tx)+50}px;height:${Math.max(ny,ty)+50}px;">
+      <path d="M${nx} ${ny} L${tx} ${ty}" stroke="var(--gold)" stroke-width="2" stroke-dasharray="6,4" fill="none" stroke-linecap="round"/>
+    </svg>`;
+  }
+  h+='</div>';
+  return h;
+}
+
 // 0.484 (user 2026-10-17): the Euroburo Interfaces as a grid of their own, placed as on the Euroburo's front panel: bottom row
 // pushbutton 1, 2, a gap, CV In 1-4, CV Out 1-4; right column (above an imagined 9th button after CV Out 4) Audio In L/R, Audio
 // Out L/R, headphones. A missing one leaves its place empty. [row, column, label]
@@ -2745,7 +2909,10 @@ function gvMoveTarget(e){const d=gvMove,m=byUid(d.uid),h=gvCellAt(e.clientX,e.cl
 function gvMovePreview(t){gvEl.querySelectorAll('.gvdrop').forEach(x=>x.remove());if(!t)return;const segs=[];
   for(let c=Math.max(0,t.pos);c<Math.min(40,t.pos+t.n);c++){const r=c>>3,l=segs[segs.length-1];if(l&&l.r===r&&l.c1===(c&7)-1)l.c1=c&7;else segs.push({r,c0:c&7,c1:c&7})}
   t.g.insertAdjacentHTML('beforeend',segs.map(x=>`<span class="gvdrop ${t.ok?'ok':'bad'}" style="grid-area:${x.r+1}/${x.c0+1}/${x.r+2}/${x.c1+2}"></span>`).join(''))}
-gvEl.addEventListener('pointerdown',e=>{e.stopPropagation();if(e.button!==0&&e.button!==1)return;gvDrag=null;gvMoveJust=false; // a pan that ended off its start button leaves no click to reset it
+gvEl.addEventListener('pointerdown',e=>{if(noteDragging)return; // Don't start panning if note drag is active
+  // Don't start panning/module-drag if clicking on a note header
+  if(e.target.closest('.gvnote-hdr'))return;
+  e.stopPropagation();if(e.button!==0&&e.button!==1)return;gvDrag=null;gvMoveJust=false; // a pan that ended off its start button leaves no click to reset it
   // 0.450: pressing on any module and dragging moves it (the selected one if it is on this button, else the top one), as the
   // header drag on the canvas; it becomes the selected module once it moves. Free buttons and the background pan.
   if(e.button===0&&!e.shiftKey){const h=gvCellAt(e.clientX,e.clientY),occ=h?(M.occupancy(st,h.page)[h.cell]||[]):[];
@@ -2763,6 +2930,291 @@ gvEl.addEventListener('pointermove',e=>{const d=gvDrag;if(!d||d.id!==e.pointerId
   if(!d.moved&&Math.abs(dx)+Math.abs(dy)>3){d.moved=true;gvEl.classList.add('panning');try{gvEl.setPointerCapture(e.pointerId)}catch(_){}} // capture only once it is a drag, so a plain click still reaches the button
   if(d.moved){gvEl.scrollLeft=d.ox-dx;gvEl.scrollTop=d.oy-dy}});
 ['pointerup','pointercancel'].forEach(ev=>gvEl.addEventListener(ev,()=>{gvEl.classList.remove('panning');if(gvDrag&&!gvDrag.moved)gvDrag=null}));
+
+// Notes event handlers
+function gvNoteAt(x,y){const el=document.elementFromPoint(x,y);return el?el.closest('.gvnote'):null}
+function gvNoteTextAt(x,y){const el=document.elementFromPoint(x,y);return el?el.closest('.gvnote-text'):null}
+
+// Context menu for adding notes
+gvEl.addEventListener('contextmenu',e=>{
+  if(!gridView)return;
+  if(noteDragging)return;
+  const note=gvNoteAt(e.clientX,e.clientY);
+  const cell=e.target.closest('[data-cell]');
+  const euroBtn=e.target.closest('[data-euro]');
+  const moduleEl=e.target.closest('.node');
+  if(note||cell||euroBtn||moduleEl)return; // Don't show on existing notes, cells, modules
+  // Allow context menu on gvpages (grids) or gvwrap (padding area), but not on other elements
+  const gvpages=gvEl.querySelector('.gvpages');
+  const gvwrap=gvEl.querySelector('.gvwrap');
+  if(!gvpages||(!gvpages.contains(e.target)&&!gvwrap.contains(e.target)))return;
+  e.preventDefault();
+  // Capture the click position in gvpages UNTRANSFORMED coordinates
+  // gvpages may have a CSS transform scale during zoom preview
+  const pagesRect=gvpages.getBoundingClientRect();
+  const gvpagesStyle=window.getComputedStyle(gvpages);
+  const transform=gvpagesStyle.transform;
+  let scale=1;
+  if(transform&&transform!=='none'){
+    const m=transform.match(/matrix\(([^)]+)\)/);
+    if(m){scale=parseFloat(m[1].split(',')[0])||1}
+  }
+  const noteX=(e.clientX-pagesRect.left)/scale;
+  const noteY=(e.clientY-pagesRect.top)/scale;
+  
+  const menu=document.createElement('div');
+  menu.style.cssText='position:fixed;background:var(--panel);border:1px solid var(--gold);border-radius:6px;padding:4px;box-shadow:var(--shadow);z-index:100;min-width:140px';
+  menu.innerHTML='<button class="btn sm" style="width:100%;text-align:left;padding:6px 10px" id="gvAddNote">Add Note</button>';
+  document.body.appendChild(menu);
+  menu.style.left=e.clientX+'px';
+  menu.style.top=e.clientY+'px';
+  // Use setTimeout to avoid immediate click event from contextmenu triggering close
+  setTimeout(()=>{
+    const close=()=>{menu.remove();document.removeEventListener('click',close)};
+    document.addEventListener('click',close,{once:true});
+  },0);
+  $('#gvAddNote').onclick=()=>{
+    commit();
+    const uid=M.uid();
+    st.notes.push({uid,text:'',x:noteX,y:noteY,w:200,h:100});
+    noteSel=uid;
+    // Preserve scroll position during renderGridView
+    const scrollLeft=gvEl.scrollLeft,scrollTop=gvEl.scrollTop;
+    renderGridView();
+    gvEl.scrollLeft=scrollLeft;gvEl.scrollTop=scrollTop;
+    // Focus the text area
+    setTimeout(()=>{const txt=gvEl.querySelector(`.gvnote[data-uid="${uid}"] .gvnote-text`);if(txt)txt.focus()},0);
+    menu.remove();
+  };
+});
+
+// Note selection and editing
+gvEl.addEventListener('pointerdown',e=>{
+  if(!gridView)return;
+  if(noteDragging)return;
+  const note=gvNoteAt(e.clientX,e.clientY);
+  const textEl=gvNoteTextAt(e.clientX,e.clientY);
+  if(textEl){
+    // Click on text area - let it handle editing, don't re-render
+    const uid=textEl.dataset.uid;
+    noteSel=uid;
+    return;
+  }
+  if(note){
+    const uid=note.dataset.uid;
+    if(e.shiftKey){
+      // Multi-select not implemented for notes yet
+    }else{
+      noteSel=uid;
+    }
+    renderGridView();
+    return;
+  }
+  // Click on empty space - deselect note
+  if(noteSel){
+    noteSel=null;
+    renderGridView();
+  }
+});
+
+// Note dragging
+gvEl.addEventListener('pointerdown',e=>{
+  if(!gridView)return;
+  const hdr=e.target.closest('.gvnote-hdr');
+  if(!hdr)return;
+  const note=hdr.closest('.gvnote');
+  if(!note)return;
+  const uid=note.dataset.uid;
+  const n=st.notes.find(x=>x.uid===uid);
+  if(!n)return;
+  e.preventDefault();
+  e.stopPropagation();
+  // Get current scale of .gvpages to convert screen pixels to gvpages coordinates
+  const gvpages=gvEl.querySelector('.gvpages');
+  const scale=gvpages?parseFloat(gvpages.style.transform.replace(/[^0-9.-]/g,''))||1:1;
+  noteDrag={uid,sx:e.clientX,sy:e.clientY,ox:n.x,oy:n.y,moved:false,id:e.pointerId,scale};
+  noteDragging=true;
+  try{gvEl.setPointerCapture(e.pointerId)}catch(_){}
+});
+
+gvEl.addEventListener('pointermove',e=>{
+  if(!noteDrag||noteDrag.id!==e.pointerId)return;
+  if(!noteDrag.moved&&Math.abs(e.clientX-noteDrag.sx)+Math.abs(e.clientY-noteDrag.sy)>3){
+    noteDrag.moved=true;
+    gvEl.classList.add('gvmoving');
+  }
+  if(noteDrag.moved){
+    const dx=(e.clientX-noteDrag.sx)/noteDrag.scale;
+    const dy=(e.clientY-noteDrag.sy)/noteDrag.scale;
+    const n=st.notes.find(x=>x.uid===noteDrag.uid);
+    if(n){
+      n.x=noteDrag.ox+dx;
+      n.y=noteDrag.oy+dy;
+      // Update DOM element in .gvnotes-layer (child of .gvwrap)
+      // Note positions are stored in gvpages coordinates; need to add offset for .gvnotes-layer
+      const gvpages=gvEl.querySelector('.gvpages');
+      const gvwrap=gvEl.querySelector('.gvwrap');
+      if(gvpages&&gvwrap){
+        const wrapRect=gvwrap.getBoundingClientRect();
+        const pagesRect=gvpages.getBoundingClientRect();
+        const offsetX=pagesRect.left-wrapRect.left;
+        const offsetY=pagesRect.top-wrapRect.top;
+        const el=gvEl.querySelector(`.gvnotes-layer .gvnote[data-uid="${n.uid}"]`);
+        if(el){el.style.left=(n.x+offsetX)+'px';el.style.top=(n.y+offsetY)+'px';}
+      }
+    }
+  }
+});
+
+['pointerup','pointercancel'].forEach(ev=>gvEl.addEventListener(ev,e=>{
+  if(!noteDrag||noteDrag.id!==e.pointerId)return;
+  if(noteDrag.moved){
+    commit();
+    const n=st.notes.find(x=>x.uid===noteDrag.uid);
+    if(n){
+      toast('Note moved.',2000);
+    }
+  }
+  noteDrag=null;
+  noteDragging=false;
+  gvEl.classList.remove('gvmoving');
+}));
+
+// Note text editing
+gvEl.addEventListener('input',e=>{
+  const txt=e.target.closest('.gvnote-text');
+  if(!txt)return;
+  const uid=txt.dataset.uid;
+  const n=st.notes.find(x=>x.uid===uid);
+  if(n){
+    n.text=txt.textContent;
+    // Auto-resize height based on content
+    const el=gvEl.querySelector(`.gvnote[data-uid="${uid}"]`);
+    if(el){
+      const textEl=el.querySelector('.gvnote-text');
+      const hdr=el.querySelector('.gvnote-hdr');
+      const minH=60;
+      const contentH=textEl.scrollHeight;
+      n.h=Math.max(minH,contentH+hdr.offsetHeight);
+      el.style.height=n.h+'px';
+    }
+  }
+});
+
+// Prevent text area clicks from triggering note selection re-render
+gvEl.addEventListener('pointerdown',e=>{
+  const txt=e.target.closest('.gvnote-text');
+  if(txt){
+    e.stopPropagation(); // Prevent bubbling to note selection handler
+  }
+}, true); // Use capture phase to intercept before other handlers
+
+// Note connection (Alt+drag from note to module/cell)
+gvEl.addEventListener('pointerdown',e=>{
+  if(!gridView||!e.altKey)return;
+  if(noteDragging)return;
+  const note=gvNoteAt(e.clientX,e.clientY);
+  if(!note)return;
+  const uid=note.dataset.uid;
+  e.preventDefault();
+  e.stopPropagation();
+  noteConnDrag={note:uid,sx:e.clientX,sy:e.clientY,cur:null,id:e.pointerId};
+  try{gvEl.setPointerCapture(e.pointerId)}catch(_){}
+  setHint('Alt+drag to a module or grid cell to create annotation connection (Esc to cancel)');
+});
+
+gvEl.addEventListener('pointermove',e=>{
+  if(!noteConnDrag||noteConnDrag.id!==e.pointerId)return;
+  noteConnDrag.cur={x:e.clientX,y:e.clientY};
+  // Show preview line
+  renderGridView();
+});
+
+['pointerup','pointercancel'].forEach(ev=>gvEl.addEventListener(ev,e=>{
+  if(!noteConnDrag)return;
+  if(ev==='pointercancel'||!noteConnDrag.cur){
+    noteConnDrag=null;
+    setHint('');
+    renderGridView();
+    return;
+  }
+  // Find target
+  const target=e.target.closest('[data-euro]')||e.target.closest('[data-cell]')||e.target.closest('.node');
+  if(target){
+    let targetInfo=null;
+    if(target.dataset.euro){
+      // Euroburo module
+      targetInfo={type:'module',target:target.dataset.euro,targetType:'module',targetPos:-1};
+    }else if(target.dataset.cell){
+      const page=+target.closest('[data-page]').dataset.page;
+      const cell=+target.dataset.cell;
+      targetInfo={type:'cell',target:`${page},${cell}`,targetType:'cell',targetPos:cell};
+    }else if(target.dataset.uid){
+      const m=byUid(target.dataset.uid);
+      if(m){
+        // Find which cell this module occupies at the pointer position
+        const occ=M.occupancy(st,m.page);
+        // For simplicity, use the first cell of the module
+        const firstCell=m.pos;
+        targetInfo={type:'module',target:m.uid,targetType:'module',targetPos:firstCell};
+      }
+    }
+    if(targetInfo){
+      commit();
+      st.noteConns.push({uid:M.uid(),note:noteConnDrag.note,...targetInfo});
+      toast('Annotation connection created.',2000);
+    }
+  }
+  noteConnDrag=null;
+  setHint('');
+  renderGridView();
+}));
+
+// Delete note with Delete/Backspace
+document.addEventListener('keydown',e=>{
+  if(!gridView)return;
+  if((e.key==='Delete'||e.key==='Backspace')&&noteSel){
+    e.preventDefault();
+    const idx=st.notes.findIndex(n=>n.uid===noteSel);
+    if(idx>=0){
+      commit();
+      st.notes.splice(idx,1);
+      // Remove associated connections
+      st.noteConns=st.noteConns.filter(c=>c.note!==noteSel);
+      noteSel=null;
+      renderGridView();
+      toast('Note deleted.',2000);
+    }
+  }
+});
+
+// Update renderGridView to include note connections preview
+const originalRenderGridView=renderGridView;
+renderGridView=function(){
+  originalRenderGridView();
+  // Draw note connection preview if dragging
+  if(noteConnDrag&&noteConnDrag.cur){
+    const gvpages=gvEl.querySelector('.gvpages');
+    if(!gvpages)return;
+    const note=st.notes.find(n=>n.uid===noteConnDrag.note);
+    if(!note)return;
+    const noteEl=gvEl.querySelector(`.gvnote[data-uid="${note.uid}"]`);
+    if(!noteEl)return;
+    const noteRect=noteEl.getBoundingClientRect();
+    const pagesRect=gvpages.getBoundingClientRect();
+    const nx=noteRect.left-pagesRect.left+noteRect.width/2;
+    const ny=noteRect.top-pagesRect.top+noteRect.height/2;
+    const tx=noteConnDrag.cur.x-pagesRect.left;
+    const ty=noteConnDrag.cur.y-pagesRect.top;
+    // Add preview SVG
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    svg.className='gvnote-conn-preview';
+    svg.style.cssText='position:absolute;left:0;top:0;pointer-events:none;z-index:20;width:100%;height:100%';
+    svg.innerHTML=`<path d="M${nx} ${ny} L${tx} ${ty}" stroke="var(--gold)" stroke-width="2" stroke-dasharray="6,4" fill="none" stroke-linecap="round"/>`;
+    gvpages.appendChild(svg);
+  }
+};
+
 $('#bGridView').onclick=()=>{if(!gridView)setGridView(true)}; // like By page / By signal: clicking again stays in the Grid view
 // By page <-> By signal: the zoom stays; the selected module (else the one nearest the middle of the view) is centred afterwards
 function focusUid(){if(sel&&sel.kind==='m'&&byUid(sel.uid))return sel.uid;const ms=st.modules.filter(m=>pageFilter<0||m.page===pageFilter);if(!ms.length)return null;
