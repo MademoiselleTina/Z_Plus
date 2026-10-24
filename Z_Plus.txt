@@ -2691,6 +2691,9 @@ function renderGridView(){if(!gridView)return;let h;gvRW=gvW;gvHi=gvSelUid(); //
   // Notes layer is a direct child of .gvpages, sharing the page group's transform and local origin.
   h+='</div>'+renderGridNotesLayerHTML();
   gvEl.innerHTML=h+'</div></div>';
+  // Free-space Notes are re-anchored to their nearest page without moving on screen.
+  // This prevents them drifting when capped page headings/gaps do not scale proportionally.
+  gvAnchorFreeNotes();
   gvSyncNoteLayer();}
 // Notes layer rendered inside .gvpages so it shares the exact same transform during zoom
 function renderGridNotesLayerHTML(){
@@ -2843,6 +2846,33 @@ function gvPageLayouts(){
       x:(r.left-pagesRect.left)/cssScale,y:(r.top-pagesRect.top)/cssScale,w:r.width/cssScale,h:r.height/cssScale,
       sectionX:(sr.left-pagesRect.left)/cssScale,sectionY:(sr.top-pagesRect.top)/cssScale};
   }).filter(Boolean);
+}
+// Return the page grid/section nearest to a point, including points outside every page.
+function gvNearestPageLayout(x,y,pages=gvPageLayouts()){
+  let best=null,bestD=Infinity;
+  for(const p of pages){
+    const dx=x<p.x?p.x-x:x>p.x+p.w?x-(p.x+p.w):0;
+    const dy=y<p.y?p.y-y:y>p.y+p.h?y-(p.y+p.h):0;
+    const d=dx*dx+dy*dy;
+    if(d<bestD){best=p;bestD=d}
+  }
+  return best;
+}
+// Convert old free-floating Notes to the nearest page's coordinate system without changing
+// their current visual position. Page gaps/headings are not perfectly scale-proportional.
+function gvAnchorFreeNotes(){
+  const pages=gvPageLayouts();if(!pages.length)return;
+  const width=gvRW||gvW||1;
+  for(const n of st.notes||[]){
+    if(n.pageIndex!==undefined&&Number(n.pageIndex)>=0)continue;
+    const baseW=Number(n.baseW)||width,scale=width/baseW;
+    const oldX=n.offsetX!==undefined?(Number(n.offsetX)||0):(Number(n.x)||0);
+    const oldY=n.offsetY!==undefined?(Number(n.offsetY)||0):(Number(n.y)||0);
+    const x=oldX*scale,y=oldY*scale,p=gvNearestPageLayout(x,y,pages);
+    if(!p)continue;
+    n.offsetX=(x-p.x)/scale;n.offsetY=(y-p.y)/scale;
+    n.pageIndex=p.index;n.baseW=baseW;n.anchorBasis=p.isEuro?'section':'grid';
+  }
 }
 function gvGridHeaderGapAtWidth(w){
   // Matches .gvpage h4: clamp(14px, calc((width/8)*.34), 17px), line-height 1.2, bottom margin 5px.
@@ -3121,16 +3151,18 @@ gvEl.addEventListener('contextmenu',e=>{
     const localX=(clickX-pagesRect.left)/cssScale;
     const localY=(clickY-pagesRect.top)/cssScale;
     const pageLayouts=gvPageLayouts();
-    // Pointer events are quantized to device/CSS pixels; tolerate a tiny edge error so a corner click
-    // does not accidentally create a free-space Note whose anchor scales independently of that page.
+    // Pointer events are quantized to device/CSS pixels; tolerate a tiny edge error at page corners.
     const edgeTolerance=2/cssScale;
     const hit=pageLayouts.find(p=>localX>=p.x-edgeTolerance&&localX<=p.x+p.w+edgeTolerance&&localY>=p.y-edgeTolerance&&localY<=p.y+p.h+edgeTolerance);
-    const pageIndex=hit?hit.index:-1;
-    const relX=hit?(localX-hit.x):localX,relY=hit?(localY-hit.y):localY;
-    const noteOffsetX=hit&&Math.abs(relX)<=edgeTolerance?0:relX;
-    const noteOffsetY=hit&&Math.abs(relY)<=edgeTolerance?0:relY;
+    // Even a Note placed in empty space uses the nearest page as its spatial reference.
+    // Its offset may lie beyond the page bounds; that is intentional and keeps it stable at every zoom.
+    const anchor=hit||gvNearestPageLayout(localX,localY,pageLayouts);
+    const pageIndex=anchor?anchor.index:-1;
+    const relX=anchor?(localX-anchor.x):localX,relY=anchor?(localY-anchor.y):localY;
+    const noteOffsetX=anchor&&Math.abs(relX)<=edgeTolerance?0:relX;
+    const noteOffsetY=anchor&&Math.abs(relY)<=edgeTolerance?0:relY;
     const newNote={uid,text:'',offsetX:noteOffsetX,offsetY:noteOffsetY,pageIndex,w:200,h:100,baseW:gvRW};
-    if(hit&&pageIndex>=0)newNote.anchorBasis=hit.isEuro?'section':'grid';
+    if(anchor&&pageIndex>=0)newNote.anchorBasis=anchor.isEuro?'section':'grid';
     st.notes.push(newNote);
     noteSel=uid;
     // Preserve scroll position during renderGridView
@@ -3211,13 +3243,14 @@ gvEl.addEventListener('pointermove',e=>{
       // The live DOM position is authoritative. Re-encode it without changing its baseW basis.
       const pos=gvNoteLocalPosition(n),scale=pos.scale||1,pages=gvPageLayouts();
       const edgeTolerance=2/gvTransformScale(gvEl.querySelector('.gvpages'));
-      const hit=pages.find(p=>pos.x>=p.x-edgeTolerance&&pos.x<=p.x+p.w+edgeTolerance&&pos.y>=p.y-edgeTolerance&&pos.y<=p.y+p.h+edgeTolerance);
-      if(hit){
-        const relX=pos.x-hit.x,relY=pos.y-hit.y;
+      // Anchor to the nearest page even when the Note is dropped in surrounding empty space.
+      const anchor=gvNearestPageLayout(pos.x,pos.y,pages);
+      if(anchor){
+        const relX=pos.x-anchor.x,relY=pos.y-anchor.y;
         n.offsetX=Math.abs(relX)<=edgeTolerance?0:relX/scale;
         n.offsetY=Math.abs(relY)<=edgeTolerance?0:relY/scale;
-        n.pageIndex=hit.index;
-        n.anchorBasis=hit.isEuro?'section':'grid';
+        n.pageIndex=anchor.index;
+        n.anchorBasis=anchor.isEuro?'section':'grid';
       }
       else{n.offsetX=pos.x/scale;n.offsetY=pos.y/scale;n.pageIndex=-1;delete n.anchorBasis}
       gvSyncNoteLayer();commit();toast('Note moved.',2000);
